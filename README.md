@@ -1,93 +1,234 @@
-# gitlab-profile
+# <img src=".gitlab/vault.png" alt="vault" height="30"/> vault.rachuna.dev — Klaster HashiCorp Vault HA
 
-Dokumentacja dla vault.rachuna-net.pl
+::include{file=.gitlab/badges.md}
 
-## Getting started
+**Centralna infrastruktura sekretów i PKI dla ekosystemu `dev.rachuna`**
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+::include{file=repositories.md}
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+---
 
-## Add your files
+## 📋 Opis biznesowy
 
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+Projekt `vault-rachuna-dev` to **3-węzłowy klaster HashiCorp Vault w wersji HA** zarządzany w pełni jako kod (GitOps). Klaster stanowi centralny punkt zarządzania sekretami, certyfikatami i autoryzacją dla całego ekosystemu infrastruktury.
 
+### Cel projektu
+
+- Centralne **zarządzanie sekretami** (kluczami API, tokenami, hasłami) dla CI/CD pipeline'ów
+- Wewnętrzna **hierarchia PKI** (Root CA → Intermediate CAs → certyfikaty TLS)
+- **Autoryzacja** dla aplikacji i agentów (userpass, AppRole)
+- **Audit logging** na wszystkie operacje w Vault
+
+### Założenia architektoniczne
+
+- Immutable infrastructure — wszystko jako kod (IaC)
+- High availability z automatycznym failoverem
+- TLS wszędzie (Vault ↔ Consul ↔ HAProxy ↔ klienci)
+- Zero trust — każdy serwis uwierzytelniony i autoryzowany
+- Centralne pipeline'y CI/CD w [dev.rachuna/flows/gitlab](https://gitlab.com/dev.rachuna/flows/gitlab)
+
+---
+
+## 🌐 Architektura sieciowa klastra
+
+### Topologia fizyczna
+
+![Topologia fizyczna](drawio/vault-ha-architecture.drawio.svg)
+
+### Stos serwisów na każdym węźle
+
+| Serwis | Port | Rola | Config |
+|--------|------|------|--------|
+| **Keepalived** | VRRP | VIP failover (10.3.2.254) | FQDN-based health check na :8200 |
+| **HAProxy** | 443 (HTTPS) | Load balancer, SNI routing | Frontendz: vault + consul DNS names |
+| **Vault** | 8200 (HTTP), 8201 (cluster) | Secrets + PKI engine | Storage: Consul HA backend, TLS enabled |
+
+### Routing SNI (HAProxy)
+
+```bash
+Client → vault.rachuna.dev:443
+  ↓
+HAProxy :443 (TCP mode, SNI-aware)
+  └─ SNI: vault.rachuna.dev → localhost:8200 (Vault)
 ```
-cd existing_repo
-git remote add origin https://gitlab.com/dev.rachuna/infrastructure/vault-rachuna-dev/gitlab-profile.git
-git branch -M main
-git push -uf origin main
+
+### Parametry Keepalived
+
+- **Virtual IP:** 10.3.2.254/24 na `eth0`
+- **VRRP instance:** `VAULT_VIP`, virtual_router_id 254
+- **Health check:** 5s interval, HTTP GET `https://127.0.0.1:8200/v1/sys/health?standbyok=true&sealedcode=503`
+- **Advert interval:** 1s
+- **Failover:** prioritety: 200 (MASTER vault-1005) → 120 (MASTER vault-1006) → 110 (BACKUP vault-1007)
+
+---
+
+## 🏗️ Architektura logiczna Vault
+
+![Architektura logiczna Vault](drawio/vault-architecture.drawio.svg)
+
+### Sekrety używane podczas bootstrap
+
+```bash
+Vault KV v2: dev.rachuna/infrastructure/vault-rachuna/ansible/
+└── vip_authentication_pass (Keepalived auth)
 ```
 
-## Integrate with your tools
+---
 
-* [Set up project integrations](https://gitlab.com/dev.rachuna/infrastructure/vault-rachuna-dev/gitlab-profile/-/settings/integrations)
+## 📦
 
-## Collaborate with your team
+![Relacje repozytoriów i zależności](drawio/repository-architecture.drawio.svg)
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+### Struktura metaprojektu
 
-## Test and Deploy
+#### `ansible/requirements.yml`
 
-Use the built-in continuous integration in GitLab.
+Plik gdzie są zdefiniowane zależności Ansible. Zawiera:
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+**9 external roles** (pobierane z `gitlab.com/dev.rachuna/artifacts/ansible-roles/`):
 
-***
+- `set-timezone`, `users-management`, `sudo`, `set-hostname`, `ssh-hardening`, `install-packages`, `keepalived`, `haproxy`, `certificates`
 
-# Editing this README
+**2 local roles** (zdefiniowane w tym repozytorium):
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+- `install-vault` — instalacja i konfiguracja HashiCorp Vault
+- `vault-auto-unseal` — systemd service do automatycznego unseal'u Vault
 
-## Suggestions for a good README
+#### `iac-vault/main.tf.json` + submodules
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+Plik główny z modułami OpenTofu. Struktura:
 
-## Name
-Choose a self-explaining name for your project.
+```bash
+modules/
+├── kv                    — Secret Engines (KV v2)
+├── users                 — Userpass user accounts (używa external shared module)
+├── auth                  — Auth methods (userpass, approle)
+├── audit                 — File audit logging
+└── pki                   — PKI hierarchy + roles + certs
+```
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+#### `iac-vault/providers.tf`
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+Konfiguracja providera Vault:
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+- **Terraform/OpenTofu**: Wymagana nowoczesna wersja
+- **Vault provider**: hashicorp/vault
+- **Default address**: `https://vault.rachuna.dev`
+- **TLS verification**: Włączona
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+---
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+## ⚠️ Słabe strony
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+### **Auto-unseal — niesecure w current implementation**
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+> [!important]
+> ⚠️ **Homelab-only risk** — w production trzeba Transit seal lub cloud KMS
+**Rekomendacja:** Migracja na Vault Transit Seal (self-hosted) lub AWS KMS/Google Cloud KMS.
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+### 2. **Circular dependency w bootstrap**
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+> [!important]
+>
+> - Ansible wymaga Vault KV (dla Consul token i SSH keys)
+> - Vault wymaga Consul (jako storage backend)
+> - Consul wymaga tokenu z Vault (dla ACL i encryption)
+> - **Łamanie cyklu:** Manual bootstrap first, potem auto-unseal dla restartów
+> - **Implikacja:** Nowe provisioning musiało być ręcznie inicjowane
+**Rekomendacja:** Dokumentacja step-by-step bootstrap procedury + test DR scenariuszy.
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+---
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+## 📁 Struktura repozytorium
 
-## License
-For open source projects, say how it is licensed.
+```bash
+vault-rachuna/              (parent — this directory)
+├── gitlab-profile/              ← 📍 You are here
+│   └── README.md                (project documentation)
+│
+├── ansible/                      (Ansible provisioning)
+│   ├── README.md
+│   ├── requirements.yml          (9 external roles + versions)
+│   ├── inventory/
+│   │   ├── hosts.yml            (vault-1005, vault-1006, vault-1007)
+│   │   ├── group_vars/vault/    (shared variables)
+│   │   └── host_vars/           (per-host overrides)
+│   ├── playbooks/
+│   │   ├── install.yml          (main provisioning playbook)
+│   │   └── test_connection.yml
+│   └── playbooks/roles/         (3 local roles)
+│       ├── install-consul/
+│       ├── install-vault/
+│       └── vault-auto-unseal/
+│
+└── iac-vault/                    (OpenTofu/Terraform IaC for Vault)
+    ├── README.md
+    ├── providers.tf / providers.tf.json
+    ├── main.tf / main.tf.json   (root modules)
+    ├── variables.tf / variables.tf.json
+    ├── kv/                       (KV secret engines)
+    ├── auth/                     (auth methods)
+    ├── approles/                 (AppRole definitions)
+    ├── users/                    (userpass users)
+    ├── policies/                 (ACL policies — 26 files)
+    ├── pki/                      (PKI hierarchy + certs)
+    ├── audit/                    (audit logging)
+    └── tools/                    (helper scripts)
+        ├── create-user-account.sh
+        ├── tofu-init.sh
+        └── tofu-plan.sh
+```
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+---
+
+## 🔧 Quick Start
+
+### Provisioning (Ansible)
+
+```bash
+cd ansible/
+
+# 1. Review inventory
+cat inventory/hosts.yml
+cat inventory/group_vars/vault/*.yml
+
+# 2. Run playbook (requires Vault KV pre-populated)
+ansible-playbook -i inventory/hosts.yml playbooks/install.yml
+
+# 3. Verify cluster
+ansible -i inventory/hosts.yml vault -m shell -a "vault status"
+```
+
+### Configuration (OpenTofu)
+
+```bash
+cd iac-vault/
+
+# 1. Initialize with GitLab state backend
+./tools/tofu-init.sh
+
+# 2. Plan
+./tools/tofu-plan.sh
+
+# 3. Apply (after review)
+tofu apply
+
+# 4. List created resources
+tofu state list
+```
+
+---
+
+## 📚 External References
+
+- **HashiCorp Vault:** https://www.vaultproject.io/
+- **Consul:** https://www.consul.io/
+- **OpenTofu:** https://opentofu.org/
+- **Group milestones:** https://gitlab.com/groups/dev.rachuna/-/milestones/13
+- **Artifacts — Ansible roles:** https://gitlab.com/dev.rachuna/artifacts/ansible-roles
+- **Artifacts — OpenTofu modules:** https://gitlab.com/dev.rachuna/artifacts/opentofu
+- **CI/CD pipelines:** https://gitlab.com/dev.rachuna/cicd/gitlab-ci
+
+---
+
+::include{file=.gitlab/footer.md}

@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+GROUP_ID="${GITLAB_GROUP_ID:-133045719}"
+GITLAB_API_URL="${GITLAB_API_URL:-https://gitlab.com/api/v4}"
+OUTPUT_FILE="${OUTPUT_FILE:-repositories.md}"
+EXCLUDED_PROJECT="${EXCLUDED_PROJECT:-}"
+PER_PAGE="${PER_PAGE:-100}"
+
+if ! command -v curl >/dev/null 2>&1; then
+  echo "error: curl is required" >&2
+  exit 1
+fi
+
+if ! command -v jq >/dev/null 2>&1; then
+  echo "error: jq is required" >&2
+  exit 1
+fi
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+profile_dir="$(cd "${script_dir}/.." && pwd)"
+output_path="${profile_dir}/${OUTPUT_FILE}"
+
+auth_header=()
+if [[ -n "${GITLAB_TOKEN:-}" ]]; then
+  auth_header=(-H "PRIVATE-TOKEN: ${GITLAB_TOKEN}")
+elif [[ -n "${GITLAB_API_TOKEN:-}" ]]; then
+  auth_header=(-H "PRIVATE-TOKEN: ${GITLAB_API_TOKEN}")
+elif [[ -n "${CI_JOB_TOKEN:-}" ]]; then
+  auth_header=(-H "JOB-TOKEN: ${CI_JOB_TOKEN}")
+fi
+
+projects_file="$(mktemp)"
+table_file="$(mktemp)"
+trap 'rm -f "${projects_file}" "${table_file}"' EXIT
+
+page=1
+while true; do
+  response="$(
+    curl --fail --silent --show-error \
+      "${auth_header[@]}" \
+      --get "${GITLAB_API_URL}/groups/${GROUP_ID}/projects" \
+      --data-urlencode "include_subgroups=true" \
+      --data-urlencode "archived=false" \
+      --data-urlencode "order_by=name" \
+      --data-urlencode "sort=asc" \
+      --data-urlencode "per_page=${PER_PAGE}" \
+      --data-urlencode "page=${page}"
+  )"
+
+  jq -c '.[]' <<<"${response}" >>"${projects_file}"
+
+  if [[ "$(jq 'length' <<<"${response}")" -lt "${PER_PAGE}" ]]; then
+    break
+  fi
+
+  page=$((page + 1))
+done
+
+{
+  cat <<'HTML'
+<table>
+<thead>
+<tr>
+<th width="200px">Repozytorium</th>
+<th width="180px">Wersja</th>
+<th >Opis</th>
+</tr>
+</thead>
+<tbody>
+HTML
+
+  jq -r --arg excluded_project "${EXCLUDED_PROJECT}" '
+    select(.path != $excluded_project and .name != $excluded_project)
+    | "<tr>\n" +
+      "<td><a href=\"" + .web_url + "\">" + .name + "</a></td>\n" +
+      "<td><a href=\"" + .web_url + "/-/releases\"><img src=\"" + .web_url + "/-/badges/release.svg\" alt=\"\"></a></td>\n" +
+      "<td>" + ((.description // "") | @html) + "</td>\n" +
+      "</tr>"
+  ' "${projects_file}"
+
+  cat <<'HTML'
+</tbody>
+</table>
+HTML
+} >"${table_file}"
+
+mv "${table_file}" "${output_path}"
+trap - EXIT
+rm -f "${projects_file}"
+
+echo "Updated ${output_path}"
