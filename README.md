@@ -23,7 +23,7 @@ Projekt `vault-rachuna-dev` to **3-węzłowy klaster HashiCorp Vault w wersji HA
 
 - Immutable infrastructure — wszystko jako kod (IaC)
 - High availability z automatycznym failoverem
-- TLS wszędzie (Vault ↔ Consul ↔ HAProxy ↔ klienci)
+- TLS wszędzie (Vault ↔ HAProxy ↔ klienci)
 - Zero trust — każdy serwis uwierzytelniony i autoryzowany
 - Centralne pipeline'y CI/CD w [dev.rachuna/flows/gitlab](https://gitlab.com/dev.rachuna/flows/gitlab)
 
@@ -40,8 +40,8 @@ Projekt `vault-rachuna-dev` to **3-węzłowy klaster HashiCorp Vault w wersji HA
 | Serwis | Port | Rola | Config |
 |--------|------|------|--------|
 | **Keepalived** | VRRP | VIP failover (10.3.2.254) | FQDN-based health check na :8200 |
-| **HAProxy** | 443 (HTTPS) | Load balancer, SNI routing | Frontendz: vault + consul DNS names |
-| **Vault** | 8200 (HTTP), 8201 (cluster) | Secrets + PKI engine | Storage: Consul HA backend, TLS enabled |
+| **HAProxy** | 443 (HTTPS) | Load balancer, SNI routing | Frontend: vault DNS names |
+| **Vault** | 8200 (HTTP), 8201 (cluster) | Secrets + PKI engine | Storage: RAFT, TLS enabled |
 
 ### Routing SNI (HAProxy)
 
@@ -126,17 +126,6 @@ Konfiguracja providera Vault:
 > ⚠️ **Homelab-only risk** — w production trzeba Transit seal lub cloud KMS
 **Rekomendacja:** Migracja na Vault Transit Seal (self-hosted) lub AWS KMS/Google Cloud KMS.
 
-### 2. **Circular dependency w bootstrap**
-
-> [!important]
->
-> - Ansible wymaga Vault KV (dla Consul token i SSH keys)
-> - Vault wymaga Consul (jako storage backend)
-> - Consul wymaga tokenu z Vault (dla ACL i encryption)
-> - **Łamanie cyklu:** Manual bootstrap first, potem auto-unseal dla restartów
-> - **Implikacja:** Nowe provisioning musiało być ręcznie inicjowane
-**Rekomendacja:** Dokumentacja step-by-step bootstrap procedury + test DR scenariuszy.
-
 ---
 
 ## 📁 Struktura repozytorium
@@ -156,8 +145,7 @@ vault-rachuna/              (parent — this directory)
 │   ├── playbooks/
 │   │   ├── install.yml          (main provisioning playbook)
 │   │   └── test_connection.yml
-│   └── playbooks/roles/         (3 local roles)
-│       ├── install-consul/
+│   └── playbooks/roles/         (2 local roles)
 │       ├── install-vault/
 │       └── vault-auto-unseal/
 │
@@ -222,7 +210,6 @@ tofu state list
 ## 📚 External References
 
 - **HashiCorp Vault:** https://www.vaultproject.io/
-- **Consul:** https://www.consul.io/
 - **OpenTofu:** https://opentofu.org/
 - **Group milestones:** https://gitlab.com/groups/dev.rachuna/-/milestones/13
 - **Artifacts — Ansible roles:** https://gitlab.com/dev.rachuna/artifacts/ansible-roles
