@@ -69,7 +69,7 @@ HAProxy :443 (TCP mode, SNI-aware)
 ### Sekrety używane podczas bootstrap
 
 ```bash
-Vault KV v2: dev.rachuna/infrastructure/vault-rachuna/ansible/
+Vault KV v2: dev.rachuna/infrastructure/vault-rachuna/vault-deployment/
 └── vip_authentication_pass (Keepalived auth)
 ```
 
@@ -135,9 +135,9 @@ vault-rachuna/              (parent — this directory)
 ├── gitlab-profile/              ← 📍 You are here
 │   └── README.md                (project documentation)
 │
-├── ansible/                      (Ansible provisioning)
+├── vault-deployment/            (Ansible provisioning)
 │   ├── README.md
-│   ├── requirements.yml          (9 external roles + versions)
+│   ├── requirements.yml         (9 external roles + versions)
 │   ├── inventory/
 │   │   ├── hosts.yml            (vault-1005, vault-1006, vault-1007)
 │   │   ├── group_vars/vault/    (shared variables)
@@ -149,60 +149,22 @@ vault-rachuna/              (parent — this directory)
 │       ├── install-vault/
 │       └── vault-auto-unseal/
 │
-└── iac-vault/                    (OpenTofu/Terraform IaC for Vault)
+└── iac-vault/                   (OpenTofu/Terraform IaC for Vault)
     ├── README.md
     ├── providers.tf / providers.tf.json
     ├── main.tf / main.tf.json   (root modules)
     ├── variables.tf / variables.tf.json
-    ├── kv/                       (KV secret engines)
-    ├── auth/                     (auth methods)
-    ├── approles/                 (AppRole definitions)
-    ├── users/                    (userpass users)
-    ├── policies/                 (ACL policies — 26 files)
-    ├── pki/                      (PKI hierarchy + certs)
-    ├── audit/                    (audit logging)
-    └── tools/                    (helper scripts)
+    ├── kv/                      (KV secret engines)
+    ├── auth/                    (auth methods)
+    ├── approles/                (AppRole definitions)
+    ├── users/                   (userpass users)
+    ├── policies/                (ACL policies — 26 files)
+    ├── pki/                     (PKI hierarchy + certs)
+    ├── audit/                   (audit logging)
+    └── tools/                   (helper scripts)
         ├── create-user-account.sh
         ├── tofu-init.sh
         └── tofu-plan.sh
-```
-
----
-
-## 🔧 Quick Start
-
-### Provisioning (Ansible)
-
-```bash
-cd ansible/
-
-# 1. Review inventory
-cat inventory/hosts.yml
-cat inventory/group_vars/vault/*.yml
-
-# 2. Run playbook (requires Vault KV pre-populated)
-ansible-playbook -i inventory/hosts.yml playbooks/install.yml
-
-# 3. Verify cluster
-ansible -i inventory/hosts.yml vault -m shell -a "vault status"
-```
-
-### Configuration (OpenTofu)
-
-```bash
-cd iac-vault/
-
-# 1. Initialize with GitLab state backend
-./tools/tofu-init.sh
-
-# 2. Plan
-./tools/tofu-plan.sh
-
-# 3. Apply (after review)
-tofu apply
-
-# 4. List created resources
-tofu state list
 ```
 
 ---
